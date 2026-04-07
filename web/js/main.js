@@ -20,6 +20,26 @@ const autoFormatterEventHandler = new AutoFormatterEventHandler();
 const attachedElementNodeInfoMap = new WeakMap(); // Map to track attached elements and their node info
 
 // --- Functions ---
+
+/**
+ * Detect whether the current ComfyUI frontend is running in Nodes 2.0 (Vue-rendered) mode.
+ * Nodes 2.0 uses Vue components instead of LiteGraph canvas for widget rendering,
+ * so the monkey-patch on ComfyWidgets.STRING cannot obtain DOM elements directly.
+ * @returns {boolean} True if Nodes 2.0 mode is detected
+ */
+function isNodes2Mode() {
+    // Nodes 2.0 renders nodes as Vue components inside the DOM rather than on a LiteGraph canvas.
+    // Check for the presence of Vue-rendered node containers or absence of the LiteGraph canvas.
+    if (document.querySelector('.graph-canvas-container .comfyui-vue-node, .node-container [data-node-type]')) {
+        return true;
+    }
+    // If app.canvas (the LiteGraph canvas instance) does not exist, it is likely Nodes 2.0
+    if (typeof app !== 'undefined' && !app.canvas) {
+        return true;
+    }
+    return false;
+}
+
 /**
  * Initialize event handlers for the autocomplete and related tags features.
  */
@@ -42,7 +62,9 @@ function initializeEventHandlers() {
         attachedElementNodeInfoMap.set(element, nodeInfo); // Mark as attached and store node info
     }
 
-    // Attempt Widget Override as the primary method
+    const nodes2Active = isNodes2Mode();
+
+    // --- Nodes 1.0: Monkey-patch ComfyWidgets.STRING as the primary attachment method ---
     // The original ComfyWidgets.STRING arguments are (node, inputName, inputData, app)
     // inputData is often an array like [type, config]
     if (ComfyWidgets && ComfyWidgets.STRING) {
@@ -54,6 +76,7 @@ function initializeEventHandlers() {
             // This is to ensure we are targeting multiline text inputs, related to '.comfy-multiline-input'
             if (result && result.widget) {
                 // fallback for older Comfyui frontend versions
+                // In Nodes 2.0, both element and inputEl may be undefined — guard with null check
                 const inputEl = result.widget.element ?? result.widget.inputEl;
                 if (inputEl && inputEl.tagName === 'TEXTAREA' && !inputEl.readOnly) {
                     const widgetConfig = inputData && inputData[1] ? inputData[1] : {};
@@ -68,24 +91,41 @@ function initializeEventHandlers() {
         };
     }
 
+    // --- Nodes 2.0: Use focusin delegation to dynamically attach listeners to Vue-rendered textareas ---
+    if (nodes2Active) {
+        document.addEventListener('focusin', (event) => {
+            const el = event.target;
+            // Only handle writable textareas that we haven't attached to yet
+            if (el && el.tagName === 'TEXTAREA' && !el.readOnly && !attachedElementNodeInfoMap.has(el)) {
+                // Infer node info from DOM structure since widget instances are not available in Nodes 2.0
+                const nodeInfo = NodeInfo.fromElement(el);
+                attachListeners(el, nodeInfo);
+            }
+        });
+    }
+
+    // --- Fallback: MutationObserver for dynamically added elements ---
     if (settingValues._useFallbackAttachmentForEventListener) {
-        // Fallback and for dynamically added elements not caught by widget override: MutationObserver
+        // Target selectors for Nodes 1.0 and Nodes 2.0 DOM structures
         const targetSelectors = [
-            '.comfy-multiline-input',
-            // Add other selectors if needed
+            '.comfy-multiline-input',               // Nodes 1.0 multiline textarea class
+            'textarea.comfyui-widget-input',         // Nodes 2.0 Vue widget textarea
+            '.comfyui-vue-node textarea',            // Nodes 2.0 textarea inside Vue node container
         ];
 
         const observer = new MutationObserver((mutations) => {
             mutations.forEach((mutation) => {
-                mutation.addedNodes.forEach((node) => {
-                    if (node.nodeType === Node.ELEMENT_NODE) {
+                mutation.addedNodes.forEach((addedNode) => {
+                    if (addedNode.nodeType === Node.ELEMENT_NODE) {
                         targetSelectors.forEach(selector => {
                             // Check if the added node itself matches or contains matching elements
-                            if (node.matches(selector)) {
-                                attachListeners(node, new NodeInfo('Fallback', 'unknown'));
+                            if (addedNode.matches(selector)) {
+                                const nodeInfo = nodes2Active ? NodeInfo.fromElement(addedNode) : new NodeInfo('Fallback', 'unknown');
+                                attachListeners(addedNode, nodeInfo);
                             } else {
-                                node.querySelectorAll(selector).forEach(el => {
-                                    attachListeners(el, new NodeInfo('Fallback', 'unknown'));
+                                addedNode.querySelectorAll(selector).forEach(el => {
+                                    const nodeInfo = nodes2Active ? NodeInfo.fromElement(el) : new NodeInfo('Fallback', 'unknown');
+                                    attachListeners(el, nodeInfo);
                                 });
                             }
                         });
@@ -97,7 +137,8 @@ function initializeEventHandlers() {
         // Initial scan for existing elements
         targetSelectors.forEach(selector => {
             document.querySelectorAll(selector).forEach(el => {
-                attachListeners(el, new NodeInfo('Fallback', 'unknown'));
+                const nodeInfo = nodes2Active ? NodeInfo.fromElement(el) : new NodeInfo('Fallback', 'unknown');
+                attachListeners(el, nodeInfo);
             });
         });
 

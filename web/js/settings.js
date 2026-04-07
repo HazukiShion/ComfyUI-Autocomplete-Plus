@@ -31,7 +31,7 @@ export const settingValues = {
 
 
     // Internal logic settings
-    _useFallbackAttachmentForEventListener: false, // Fallback to attach event listener when somthing goes wrong
+    _useFallbackAttachmentForEventListener: true, // Enabled by default; in Nodes 1.0 the monkey-patch is primary, this serves as fallback. In Nodes 2.0 this is overridden at runtime by main.js to use focusin-based attachment.
     _maxTagLength: 100, // Maximum tag length to prevent performance issues with long text input
 
     // Debugging settings (use internally)
