@@ -22,25 +22,6 @@ const attachedElementNodeInfoMap = new WeakMap(); // Map to track attached eleme
 // --- Functions ---
 
 /**
- * Detect whether the current ComfyUI frontend is running in Nodes 2.0 (Vue-rendered) mode.
- * Nodes 2.0 uses Vue components instead of LiteGraph canvas for widget rendering,
- * so the monkey-patch on ComfyWidgets.STRING cannot obtain DOM elements directly.
- * @returns {boolean} True if Nodes 2.0 mode is detected
- */
-function isNodes2Mode() {
-    // Nodes 2.0 renders nodes as Vue components inside the DOM rather than on a LiteGraph canvas.
-    // Check for the presence of Vue-rendered node containers or absence of the LiteGraph canvas.
-    if (document.querySelector('.graph-canvas-container .comfyui-vue-node, .node-container [data-node-type]')) {
-        return true;
-    }
-    // If app.canvas (the LiteGraph canvas instance) does not exist, it is likely Nodes 2.0
-    if (typeof app !== 'undefined' && !app.canvas) {
-        return true;
-    }
-    return false;
-}
-
-/**
  * Initialize event handlers for the autocomplete and related tags features.
  */
 function initializeEventHandlers() {
@@ -61,8 +42,6 @@ function initializeEventHandlers() {
 
         attachedElementNodeInfoMap.set(element, nodeInfo); // Mark as attached and store node info
     }
-
-    const nodes2Active = isNodes2Mode();
 
     // --- Nodes 1.0: Monkey-patch ComfyWidgets.STRING as the primary attachment method ---
     // The original ComfyWidgets.STRING arguments are (node, inputName, inputData, app)
@@ -91,18 +70,20 @@ function initializeEventHandlers() {
         };
     }
 
-    // --- Nodes 2.0: Use focusin delegation to dynamically attach listeners to Vue-rendered textareas ---
-    if (nodes2Active) {
-        document.addEventListener('focusin', (event) => {
-            const el = event.target;
-            // Only handle writable textareas that we haven't attached to yet
-            if (el && el.tagName === 'TEXTAREA' && !el.readOnly && !attachedElementNodeInfoMap.has(el)) {
-                // Infer node info from DOM structure since widget instances are not available in Nodes 2.0
-                const nodeInfo = NodeInfo.fromElement(el);
-                attachListeners(el, nodeInfo);
-            }
-        });
-    }
+    // --- Focusin delegation: dynamically attach listeners to any textarea on first focus ---
+    // Always active to cover both Nodes 1.0 (as a catch-all) and Nodes 2.0 (as the primary method).
+    // In Nodes 1.0, the monkey-patch above attaches first with accurate NodeInfo;
+    // the WeakMap guard in attachListeners() prevents double-attachment.
+    // In Nodes 2.0, the monkey-patch cannot obtain DOM elements, so focusin is the primary path.
+    document.addEventListener('focusin', (event) => {
+        const el = event.target;
+        // Only handle writable textareas that we haven't attached to yet
+        if (el && el.tagName === 'TEXTAREA' && !el.readOnly && !attachedElementNodeInfoMap.has(el)) {
+            // Infer node info from DOM structure; falls back to 'Unknown'/'unknown' if no data-* attributes found
+            const nodeInfo = NodeInfo.fromElement(el);
+            attachListeners(el, nodeInfo);
+        }
+    });
 
     // --- Fallback: MutationObserver for dynamically added elements ---
     if (settingValues._useFallbackAttachmentForEventListener) {
@@ -120,12 +101,10 @@ function initializeEventHandlers() {
                         targetSelectors.forEach(selector => {
                             // Check if the added node itself matches or contains matching elements
                             if (addedNode.matches(selector)) {
-                                const nodeInfo = nodes2Active ? NodeInfo.fromElement(addedNode) : new NodeInfo('Fallback', 'unknown');
-                                attachListeners(addedNode, nodeInfo);
+                                attachListeners(addedNode, NodeInfo.fromElement(addedNode));
                             } else {
                                 addedNode.querySelectorAll(selector).forEach(el => {
-                                    const nodeInfo = nodes2Active ? NodeInfo.fromElement(el) : new NodeInfo('Fallback', 'unknown');
-                                    attachListeners(el, nodeInfo);
+                                    attachListeners(el, NodeInfo.fromElement(el));
                                 });
                             }
                         });
@@ -137,8 +116,7 @@ function initializeEventHandlers() {
         // Initial scan for existing elements
         targetSelectors.forEach(selector => {
             document.querySelectorAll(selector).forEach(el => {
-                const nodeInfo = nodes2Active ? NodeInfo.fromElement(el) : new NodeInfo('Fallback', 'unknown');
-                attachListeners(el, nodeInfo);
+                attachListeners(el, NodeInfo.fromElement(el));
             });
         });
 
